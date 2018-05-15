@@ -41,21 +41,8 @@ fi
 
 DISTRO=$(cat /etc/*-release|grep ^ID\=|awk -F\= {'print $2'}|sed s/\"//g)
 
-if [ "x$ADD_ONLINE_REPOS" == "xYES" ]; then
-  yum install -y yum-utils
-  RPM_EXTRAS=$RPM_EXTRAS_REPO_NAME
-  RPM_OPTIONAL=$RPM_OPTIONAL_REPO_NAME
-  yum-config-manager --enable $RPM_EXTRAS $RPM_OPTIONAL
-  yum install -y yum-plugin-priorities
-  PNDA_REPO=${PNDA_MIRROR/http\:\/\//}
-  PNDA_REPO=${PNDA_REPO/\//_mirror_rpm}
-  yum-config-manager --add-repo $PNDA_MIRROR/mirror_rpm
-  yum-config-manager --setopt="$PNDA_REPO.priority=1" --enable $PNDA_REPO
-else
-  mkdir -p /etc/yum.repos.d.backup/
-  mv /etc/yum.repos.d/* /etc/yum.repos.d.backup/
-  
-  cat << EOF > /etc/yum.repos.d/pnda_mirror.repo
+
+cat << EOF > /etc/yum.repos.d/pnda_mirror.repo
 
 [pnda_mirror]
 name=added from: $PNDA_MIRROR/mirror_rpm
@@ -67,7 +54,17 @@ keepcache = 0
 
 EOF
 
-fi
+cat > /etc/yum/pluginconf.d/fastestmirror.conf << EOF
+[main]
+enabled=0
+EOF
+
+yum-config-manager --disable base
+yum-config-manager --disable extras
+yum-config-manager --disable updates
+
+chmod -v a-w /etc/yum.repos.d
+ls -l /etc/yum.repos.d/
 
 if [ "x$DISTRO" == "xrhel" ]; then
   rpm --import $PNDA_MIRROR/mirror_rpm/RPM-GPG-KEY-redhat-release
