@@ -4,6 +4,9 @@
 heat_template_version: 2015-04-30
 
 parameters:
+  pnda_router:
+    type: string
+    default: '15fc200f-484b-4d2e-bd5d-a7d26b7a4ea4'
   privateSubnetCidr:
     type: string
     description: Private network address (CIDR notation)
@@ -78,31 +81,34 @@ resources:
       gateway_ip: { get_param: publicProducerSubnetGateway }
 
   # create a software router
-  pnda_router:
-    type: OS::Neutron::Router
-    properties:
-      name:
-        str_replace:
-          template: '%stackname%_pnda_router'
-          params:
-            '%stackname%': { get_param: 'OS::stack_name' }
-      external_gateway_info:
-        network: { get_param: PUBLIC_NETWORK_ID }
+  #pnda_router:
+  #  type: OS::Neutron::Router
+  #  properties:
+  #    name:
+  #      str_replace:
+  #        template: '%stackname%_pnda_router'
+  #        params:
+  #          '%stackname%': { get_param: 'OS::stack_name' }
+  #    external_gateway_info:
+  #      network: { get_param: PUBLIC_NETWORK_ID }
 
   # Attach pnda_private_subnet as an interface to the pnda_router
   private_network_router_interface:
     type: OS::Neutron::RouterInterface
-    depends_on: [ pnda_router, pnda_private_subnet ]
+    depends_on: [ pnda_private_subnet ]
     properties:
-      router_id: { get_resource: pnda_router }
+      #router_id: { get_resource: pnda_router }
+      router_id: { get_param: pnda_router }
       subnet_id: { get_resource: pnda_private_subnet }
 
   # Attach pnda_ingest_subnet as an interface to the pnda_router
   ingest_network_router_interface:
     type: OS::Neutron::RouterInterface
-    depends_on: [ pnda_router, pnda_ingest_subnet ]
+    #depends_on: [ pnda_router, pnda_ingest_subnet ]
+    depends_on: [ pnda_ingest_subnet ]
     properties:
-      router_id: { get_resource: pnda_router }
+      #router_id: { get_resource: pnda_router }
+      router_id: { get_param: pnda_router }
       subnet_id: { get_resource: pnda_ingest_subnet }
 
   # Create security group for pnda
