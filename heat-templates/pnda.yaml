@@ -6,7 +6,7 @@ heat_template_version: 2015-04-30
 parameters:
   pnda_router:
     type: string
-    default: '15fc200f-484b-4d2e-bd5d-a7d26b7a4ea4'
+    default: 'e8343b43-edd0-425d-a435-ea7ff789125d'
   privateSubnetCidr:
     type: string
     description: Private network address (CIDR notation)
