@@ -26,11 +26,14 @@ import traceback
 import tarfile
 import Queue
 import StringIO
+import glob
+import random
 
 from threading import Thread
 
-import requests
 import yaml
+import requests
+import jinja2
 import pnda_cli_utils as utils
 from pnda_cli_utils import PNDAConfigException
 from pnda_cli_utils import MILLI_TIME
@@ -44,7 +47,7 @@ CONSOLE = utils.CONSOLE_LOGGER
 LOG = utils.FILE_LOGGER
 LOG_FILE_NAME = utils.LOG_FILE_NAME
 THROW_BASH_ERROR = "cmd_result=${PIPESTATUS[0]} && if [ ${cmd_result} != '0' ]; then exit ${cmd_result}; fi"
-
+PNDAPROJECTCA = "pndaproject-ca"
 
 class BaseBackend(object):
     '''
@@ -123,7 +126,7 @@ class BaseBackend(object):
             instance_map = self.fill_instance_map()
             self._ssh_client.set_ip_mappings(instance_map)
             if check_bootstrapped:
-                self._check_hosts_bootstrapped(instance_map, self._cluster, self._cluster + '-' + self._node_config['bastion-instance'] in instance_map)
+                self._check_hosts_bootstrapped(instance_map, self._cluster + '-' + self._node_config['bastion-instance'] in instance_map)
 
             self._cached_instance_map = instance_map
 
@@ -197,8 +200,18 @@ class BaseBackend(object):
         try:
             local_certs_path = self._pnda_env['security']['SECURITY_MATERIAL_PATH']
             platform_certs_tarball = '%s.tar.gz' % str(uuid.uuid1())
+            if self._pnda_env['security']['SECURITY_MODE'] == 'enforced':
+                self._ensure_certs()
             with tarfile.open(platform_certs_tarball, mode='w:gz') as archive:
-                archive.add(local_certs_path, arcname='security-certs', recursive=True)
+                # Exclude CA's private key
+                keys = glob.glob(os.path.join(local_certs_path, '*.key'))
+                if len(keys) == 1:
+                    skip = os.path.normpath(os.path.join('security-certs', os.path.basename(keys[0])))
+                    filter_function = lambda tarinfo: None if os.path.normpath(tarinfo.name) == skip else tarinfo
+                else:
+                    filter_function = None
+
+                archive.add(local_certs_path, arcname='security-certs', recursive=True, filter=filter_function)
         except Exception as exception:
             if self._pnda_env['security']['SECURITY_MODE'] == 'permissive':
                 LOG.warning(exception)
@@ -212,13 +225,173 @@ class BaseBackend(object):
 
         return platform_certs_tarball
 
+    def _call(self, cmd):
+        ret_val = subprocess_to_log.call(cmd.split(' '), LOG)
+        if ret_val != 0:
+            raise Exception("Error running %s" % cmd)
+
+    def _ensure_certs(self):
+        local_certs_path = self._pnda_env['security']['SECURITY_MATERIAL_PATH']
+        exts = ['key', 'crt']
+        if self._has_certs(local_certs_path, exts):
+            exts = ['key', 'crt', 'yaml']
+            if self._has_all_certs(local_certs_path, exts):
+                # Proceed with the provided security material
+                return
+            else:
+                # Some security material is missing
+                raise Exception("Security material is missing in %s" % local_certs_path)
+        else:
+            # Generate the security material
+            cakey, cacert = self._ensure_ca_cert(local_certs_path)
+            self._generate_host_certs(local_certs_path, cakey, cacert)
+
+    def _ensure_ca_cert(self, local_certs_path):
+        keys = glob.glob(os.path.join(local_certs_path, '*.key'))
+        certs = glob.glob(os.path.join(local_certs_path, '*.crt'))
+        if len(keys) == 1 and len(certs) == 1:
+            return (keys[0], certs[0])
+        if certs and not keys:
+            raise Exception("Security material is missing a key in %s" % local_certs_path)
+        keyout = os.path.join(local_certs_path, PNDAPROJECTCA+'.key')
+        out = os.path.join(local_certs_path, PNDAPROJECTCA+'.crt')
+        config = os.path.join(local_certs_path, PNDAPROJECTCA+'.cfg')
+        self._generate_ca_conf(config)
+        self._call('openssl req -new -x509 -extensions v3_ca -keyout {} -out {} \
+-days 3650 -newkey rsa:2048 -sha512 -passout pass:pnda -config {}'.format(keyout, out, config))
+        return (keyout, out)
+
+    def _generate_host_certs(self, local_certs_path, cakey, cacert):
+        services = [service for service in os.listdir('./platform-certificates') if os.path.isdir(os.path.join('./platform-certificates', service))]
+        for service in services:
+            sdir = os.path.join(local_certs_path, service)
+            if not os.path.isdir(sdir):
+                os.makedirs(sdir)
+            ymls = glob.glob(os.path.join(sdir, '*.yaml'))
+            fqdn = None
+            if ymls:
+                cfgs = self._load_host_yaml(ymls[0])
+                if 'fqdn' in cfgs.keys():
+                    fqdn = cfgs['fqdn']
+                    CONSOLE.debug('Using detected fqdn:%s', fqdn)
+                else:
+                    raise Exception("Missing 'fqdn' setting in %s" % ymls[0])
+            else:
+                fqdn = self._get_fqdn_for_service(service)
+                self._generate_host_yaml(os.path.join(sdir, fqdn+'.yaml'), fqdn)
+            key_f = os.path.join(sdir, fqdn)
+            self._generate_host_conf(key_f+'.cfg', fqdn)
+            self._generate_host_ext_conf(key_f+'.ext', fqdn)
+            self._call('openssl genrsa -out {key_f}.key 2048'.format(key_f=key_f))
+            self._call('openssl req -new -key {key_f}.key -out {key_f}.csr -config {key_f}.cfg'.format(key_f=key_f))
+            self._call('openssl x509 -req -days 365 -in {key_f}.csr -extfile {key_f}.ext -CA {cacert} -CAkey {cakey} \
+-set_serial {serial} -out {key_f}.crt -sha512 -passin pass:pnda'.format(key_f=key_f, cacert=cacert, cakey=cakey, serial=random.getrandbits(20*8)))
+
+    def _get_role_for_service(self, service):
+        role = None
+        service_to_role_descriptor = self._get_service_to_role_descriptor()
+        if service in service_to_role_descriptor:
+            role = service_to_role_descriptor[service]['role']
+        return role
+
+    def _get_fqdn_for_service(self, service):
+        fqdn = None
+        domain = self._pnda_env['domain']['SECOND_LEVEL_DOMAIN'] + '.' + self._pnda_env['domain']['TOP_LEVEL_DOMAIN']
+        role = self._get_role_for_service(service)
+        if role:
+            fqdn = service + '.service.' + domain
+        return fqdn
+
+    def _generate_ca_conf(self, path):
+        with open(path, 'w') as config_file:
+            config_file.write('''
+[req]
+default_bits=2048
+prompt=no
+default_md=sha512
+distinguished_name=dn
+x509_extensions=v3_ca
+[ dn ]
+O=PNDA Project
+OU=Community
+emailAddress=info@pndaproject.io
+CN=PNDA Certificate Authority
+[ v3_ca ]
+basicConstraints=critical,CA:true
+keyUsage=cRLSign,keyCertSign
+''')
+
+    def _generate_host_yaml(self, path, fqdn):
+        with open(path, 'w') as config_file:
+            data = dict(
+                fqdn=fqdn
+                )
+            yaml.dump(data, config_file, default_flow_style=False)
+
+    def _load_host_yaml(self, path):
+        with open(path, 'r') as config_file:
+            return yaml.load(config_file)
+
+    def _generate_host_conf(self, path, fqdn):
+        with open(path, 'w') as config_file:
+            config_file.write('''
+[req]
+default_bits=2048
+prompt=no
+default_md=sha512
+distinguished_name=dn
+[ dn ]
+O=PNDA Project
+OU=Community
+emailAddress=info@pndaproject.io
+''')
+            config_file.write('CN=%s\n' % fqdn)
+
+    def _generate_host_ext_conf(self, path, fqdn):
+        with open(path, 'w') as config_file:
+            config_file.write('''
+authorityKeyIdentifier=keyid,issuer
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+[ alt_names ]
+''')
+            config_file.write('DNS.1 = %s\n' % fqdn)
+
+
+    def _has_all_certs(self, local_certs_path, exts):
+        ret = True
+        roles = [role for role in os.listdir('./platform-certificates') if os.path.isdir(os.path.join('./platform-certificates', role))]
+        for role in roles:
+            for ext in exts:
+                file_name = os.path.join(local_certs_path, role, '*.'+ext)
+                files = glob.glob(file_name)
+                if not files:
+                    CONSOLE.debug('Missing %s', file_name)
+                    ret = False
+        return ret
+
+    def _has_certs(self, local_certs_path, exts):
+        for ext in exts:
+            files = glob.glob(os.path.join(local_certs_path, '*', '*.'+ext))
+            if files:
+                CONSOLE.debug('Security material was detected: %s', files[0])
+                return True
+        CONSOLE.debug('No security material was detected')
+        return False
+
     def _get_volume_info(self, node_type, config_file):
         volumes = None
         if node_type:
-            with open(config_file, 'r') as infile:
-                volume_config = yaml.load(infile)
-                volume_class = volume_config['instances'][node_type]
-                volumes = volume_config['classes'][volume_class]
+            config_file_list = config_file.split("/")
+            config_file_path = "%s/%s" % (config_file_list[0], config_file_list[1])
+            template_loader = jinja2.FileSystemLoader(searchpath=config_file_path)
+            template_env = jinja2.Environment(loader=template_loader)
+            template = template_env.get_template(config_file_list[2])
+            volume_config = yaml.safe_load(template.render(pnda_env=self._pnda_env))
+            volume_class = volume_config['instances'][node_type]
+            volumes = volume_config['classes'][volume_class]
+
         return volumes
 
     def _set_up_env_conf(self):
@@ -433,7 +606,7 @@ class BaseBackend(object):
             nc_scp_cmd = "scp -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s %s@%s:%s" % (
                 self._keyfile, ' '.join(files_to_scp), self._pnda_env['infrastructure']['OS_USER'], bastion_ip, '/tmp')
             CONSOLE.debug(nc_scp_cmd)
-            ret_val = subprocess_to_log.call(nc_scp_cmd.split(' '), LOG, bastion_ip)
+            ret_val = subprocess_to_log.call(nc_scp_cmd.split(' '), LOG, log_id=bastion_ip)
             if ret_val != 0:
                 raise Exception("Error transferring files to new host %s via SCP. See debug log (%s) for details." % (bastion_ip, LOG_FILE_NAME))
 
@@ -442,7 +615,7 @@ class BaseBackend(object):
             nc_install_cmd = nc_ssh_cmd.split(' ')
             nc_install_cmd.append(' && '.join(cmds_to_run))
             CONSOLE.debug(nc_install_cmd)
-            ret_val = subprocess_to_log.call(nc_install_cmd, LOG, bastion_ip)
+            ret_val = subprocess_to_log.call(nc_install_cmd, LOG, log_id=bastion_ip)
             if ret_val != 0:
                 raise Exception("Error running ssh commands on host %s. See debug log (%s) for details." % (bastion_ip, LOG_FILE_NAME))
 
@@ -453,6 +626,7 @@ class BaseBackend(object):
         CONSOLE.info('Bootstrapping saltmaster. Expect this to take a few minutes, check the debug log for progress (%s).', LOG_FILE_NAME)
         saltmaster = instance_map[self._cluster + '-' + self._node_config['salt-master-instance']]
         saltmaster_ip = saltmaster['private_ip_address']
+
         platform_salt_tarball = None
         if 'PLATFORM_SALT_LOCAL' in self._pnda_env['platform_salt']:
             local_salt_path = self._pnda_env['platform_salt']['PLATFORM_SALT_LOCAL']
@@ -505,7 +679,7 @@ class BaseBackend(object):
         self._ssh_client.ssh(['(sudo salt -v --log-level=debug --timeout=120 --state-output=mixed "*" mine.update 2>&1) | tee -a pnda-salt.log; %s'
                               % THROW_BASH_ERROR], saltmaster_ip)
 
-        self._register_public_services(saltmaster_ip)
+        self._register_services(saltmaster_ip)
 
         CONSOLE.info('Continuing with installation of PNDA')
         self._ssh_client.ssh(['(sudo salt -v --log-level=debug --timeout=120 --state-output=mixed "*"'
@@ -513,23 +687,25 @@ class BaseBackend(object):
                               '(sudo CLUSTER=%s salt-run --log-level=debug state.orchestrate orchestrate.pnda 2>&1) | tee -a pnda-salt.log; %s'
                               % (self._cluster, THROW_BASH_ERROR)], saltmaster_ip)
 
-    def _register_public_services(self, saltmaster_ip):
+    def _register_services(self, saltmaster_ip):
         CONSOLE.info('Populating %s with services', self._service_registry.name)
-        CONSOLE.debug('Populating %s with public services', self._service_registry.name)
         # Read descriptor
         service_to_role_descriptor = self._get_service_to_role_descriptor()
         # Find hosts with those roles using grains
+        instances = self.get_instance_map()
+        affected_hosts = []
         for service in service_to_role_descriptor:
             role = service_to_role_descriptor[service]['role']
             port = service_to_role_descriptor[service]['port']
             hosts_for_role = self._get_hosts_for_role(saltmaster_ip, role)
-            # Get the public addresses for those hosts
-            public_addresses_for_role = [instance_properties['ip_address']
-                                         for instance_name, instance_properties in self.get_instance_map().iteritems()
-                                         if instance_name in hosts_for_role and instance_properties['ip_address'] is not None]
-            # Push records into registry mapping service->public address
-            self._service_registry.register_service_record(service, public_addresses_for_role, port)
-        self._service_registry.commit()
+            # Get the addresses for those hosts
+            def ip_for_service(name, props):
+                return 'private_ip_address' if not props['ip_address'] else 'ip_address'
+            addresses_for_service = [instances[host][ip_for_service(service, instances[host])] for host in hosts_for_role]
+            # Push records into registry mapping service->address
+            affected_hosts.extend(hosts_for_role)
+            self._service_registry.register_service_record(service, addresses_for_service, port)
+        self._service_registry.commit([instances[host]['private_ip_address'] for host in set(affected_hosts)])
 
     def _get_service_to_role_descriptor(self):
         rts_filepath = 'bootstrap-scripts/service_to_role.json'
@@ -566,7 +742,8 @@ class BaseBackend(object):
         bootstrap_errors = Queue.Queue()
         for _, instance in instance_map.iteritems():
             if instance['node_type'] and not instance['bootstrapped']:
-                thread = Thread(target=self._bootstrap, args=[instance, saltmaster_ip, self._cluster, self._flavor, self._branch, None, None, bootstrap_errors])
+                thread = Thread(target=self._bootstrap,
+                                args=[instance, saltmaster_ip, self._cluster, self._flavor, self._branch, None, None, bootstrap_errors])
                 bootstrap_threads.append(thread)
                 thread.daemon = True
 
@@ -582,7 +759,7 @@ class BaseBackend(object):
         # An improvement would be running a test.ping and waiting for all expected minions to be ready
         CONSOLE.info('Installing Consul')
         self._ssh_client.ssh(['(sudo salt -v --log-level=debug --timeout=120 --state-output=mixed'
-                              '-C "G@pnda:is_new_node" state.sls consul,consul.dns queue=True 2>&1)'
+                              ' -C "G@pnda:is_new_node" state.sls consul,consul.dns queue=True 2>&1)'
                               ' | tee -a pnda-salt.log; %s' % THROW_BASH_ERROR], saltmaster_ip)
         CONSOLE.info('Restarting minions')
         self._restart_minions([instance_map[h]['private_ip_address'] for h in instance_map], bastion_ip is not None)
@@ -614,21 +791,21 @@ class BaseBackend(object):
         if os.path.exists(env_sh_file):
             os.remove(env_sh_file)
 
-    def _check_hosts_bootstrapped(self, instances, cluster, bastion_used):
+    def _check_hosts_bootstrapped(self, instances, bastion_used):
         check_threads = []
         check_results = Queue.Queue()
 
-        def do_check(host_key, host, cluster, check_results):
+        def do_check(host_key, host, check_results):
             try:
                 CONSOLE.info('Checking bootstrap status for %s', host)
-                self._ssh_client.ssh(['ls ~/.bootstrap_complete'], cluster, host)
+                self._ssh_client.ssh(['ls ~/.bootstrap_complete'], host)
                 CONSOLE.debug('Host is bootstrapped: %s.', host)
                 check_results.put(host_key)
             except:
                 CONSOLE.debug('Host is not bootstrapped: %s.', host)
 
         for key, instance in instances.iteritems():
-            thread = Thread(target=do_check, args=[key, instance['private_ip_address'], cluster, check_results])
+            thread = Thread(target=do_check, args=[key, instance['private_ip_address'], check_results])
             thread.daemon = True
             check_threads.append(thread)
 
@@ -642,6 +819,7 @@ class BaseBackend(object):
         self._check_private_key_exists(keyfile)
         self._check_pnda_mirror()
         self.check_target_specific_config()
+        self._check_data_volume_count()
 
     def _check_private_key_exists(self, keyfile):
         if not os.path.isfile(keyfile):
@@ -672,3 +850,9 @@ class BaseBackend(object):
         except:
             raise_error("Failed to connect to PNDA mirror. Verify connection "
                         "to %s, check mirror in pnda_env.yaml and try again." % mirror)
+
+    def _check_data_volume_count(self):
+        data_volume_count = int(self._pnda_env['datanode']['DATA_VOLUME_COUNT'])
+        if data_volume_count == 0:
+            CONSOLE.error('Datanode volume count should not be zero')
+            sys.exit(1)

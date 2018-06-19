@@ -4,7 +4,6 @@
 heat_template_version: 2015-04-30
 
 parameters:
-  pnda_router:
     type: string
     default: 'e8343b43-edd0-425d-a435-ea7ff789125d'
   privateSubnetCidr:
@@ -19,62 +18,62 @@ parameters:
   publicProducerSubnetGateway:
     type: string
     description: Ingest network gateway address
-  PUBLIC_NETWORK_ID:
+  externalPublicNetworkId:
     type: string
     description: >
       ID or name of public network for which floating IP addresses will be allocated
+  publicSubnetCidr: 
+    type: string
+    default: "10.0.0.0/24"
+    description: "CIDR specifying the address range for the public subnet"
   whitelistSshAccess:
     type: string
-    description: >
-      CIDR specifying the address range that may access the created PNDA instances (CIDR notation)
-  DeploymentID:
+    description: "Whitelist for external access to ssh"
+    default: "0.0.0.0/0"
+  whitelistKafkaAccess:
+    type: string
+    default: "0.0.0.0/0"
+    description: "Whitelist for external access to kafka"
+  deploymentID:
     type: string
     default: ''
     description: |
-      DeploymentID for this deployment. To trigger a scaling, the stack shall be updated using a different value passed as a parameter.
-      Otherwise, orchestration steps necessary to properly the scale the clusters will not be executed.
-  IMAGE_ID:
+      "DeploymentID for this deployment. To trigger a scaling, the stack shall be updated using a different value passed as a parameter.
+      Otherwise, orchestration steps necessary to properly the scale the clusters will not be executed"
+  imageId:
     type: string
-    description: default image for pnda servers
-  KeyName:
-    description: Name of an existing KeyPair to enable SSH access to the instances
+    description: "default image for pnda servers"
+  keyName:
+    description: "Name of an existing KeyPair to enable SSH access to the instances"
     type: string
-  dns_nameservers:
-    description: A specified  DNS name servers to be used.
+  nameServers:
+    description: "A specified  DNS name servers to be used"
     type: comma_delimited_list
 
 resources:
-  # Create pnda private net and subnet. All pnda-cluster nodes will be part of this network
-  pnda_private_network:
+  pndaRouter:
+    type: OS::Neutron::Router
+    properties:
+      name:
+        str_replace:
+          template: '%stackname%_pndaRouter'
+          params:
+            '%stackname%': { get_param: 'OS::stack_name' }
+      external_gateway_info:
+        network: { get_param: externalPublicNetworkId }
+
+  publicNetwork:
     type: OS::Neutron::Net
     properties:
       name:
         str_replace:
-          template: '%stackname%_private_network'
-          params:
-            '%stackname%': { get_param: 'OS::stack_name' }
-  pnda_private_subnet:
-    type: OS::Neutron::Subnet
-    depends_on: pnda_private_network
-    properties:
-      network_id: { get_resource: pnda_private_network }
-      cidr: { get_param: privateSubnetCidr }
-      gateway_ip: { get_param: privateSubnetGateway }
-      dns_nameservers: { get_param: dns_nameservers }
-
-  # Create Kafka ingest net and subnet. All kafka nodes will be part of this network
-  pnda_ingest_network:
-    type: OS::Neutron::Net
-    properties:
-      name:
-        str_replace:
-          template: '%stackname%_ingest_network'
+          template: '%stackname%_publicNetwork'
           params:
             '%stackname%': { get_param: 'OS::stack_name' }
 
-  pnda_ingest_subnet:
+  publicSubnet:
     type: OS::Neutron::Subnet
-    depends_on: pnda_private_network
+    depends_on: publicNetwork
     properties:
       network_id: { get_resource: pnda_ingest_network }
       cidr: { get_param: publicProducerSubnetCidr }
@@ -97,14 +96,16 @@ resources:
     type: OS::Neutron::RouterInterface
     depends_on: [ pnda_private_subnet ]
     properties:
-      #router_id: { get_resource: pnda_router }
       router_id: { get_param: pnda_router }
       subnet_id: { get_resource: pnda_private_subnet }
+      network_id: { get_resource: publicNetwork }
+      cidr: { get_param: publicSubnetCidr }
+      dns_nameservers: { get_param: nameServers }
 
-  # Attach pnda_ingest_subnet as an interface to the pnda_router
-  ingest_network_router_interface:
+
+  # Attach publicSubnet as an interface to the pnda_router
+  publicNetworkRouterInterface:
     type: OS::Neutron::RouterInterface
-    #depends_on: [ pnda_router, pnda_ingest_subnet ]
     depends_on: [ pnda_ingest_subnet ]
     properties:
       #router_id: { get_resource: pnda_router }
@@ -112,13 +113,13 @@ resources:
       subnet_id: { get_resource: pnda_ingest_subnet }
 
   # Create security group for pnda
-  pnda_security_group_pnda:
+  pndaSecurityGroupPnda:
     type: OS::Neutron::SecurityGroup
     properties:
-      description: Add security group rules for pnda deployment
+      description: "Add security group rules for pnda deployment"
       name:
         str_replace:
-          template: '%stackname%_security_group_pnda'
+          template: '%stackname%_securityGroupPnda'
           params:
             '%stackname%': { get_param: 'OS::stack_name' }
       rules:
@@ -135,7 +136,7 @@ resources:
         - protocol: udp
           port_range_min: 53
           port_range_max: 53
-          remote_mode: remote_group_id
+          remote_mode: remote_group_id 
 
         - protocol: icmp
           remote_mode: remote_group_id
@@ -145,26 +146,14 @@ resources:
           port_range_max: 65535
           remote_mode: remote_group_id
 
-  # Create security group for kafka ingest
-  pnda_security_group_kafka_ingest:
-    type: OS::Neutron::SecurityGroup
-    properties:
-      description: Ingest SecurityGroup
-      name:
-        str_replace:
-          template: '%stackname%_security_group_kafka_ingest'
-          params:
-            '%stackname%': { get_param: 'OS::stack_name' }
-      rules:
         - protocol: tcp
           port_range_min: 9090
           port_range_max: 9100
-          remote_ip_prefix: { get_param: whitelistSshAccess }
+          remote_ip_prefix: { get_param: whitelistKafkaAccess }
 
 outputs:
-  DeploymentID:
-    value: { get_param: DeploymentID }
+  deploymentID:
+    value: { get_param: deploymentID }
     description: |
-      Last DeploymentID used. To trigger a scaling, the stack shall be updated using a different value passed as a parameter.
-      Otherwise, orchestration steps necessary to properly the scale the clusters will not be executed.
-
+      "Last deploymentID used. To trigger a scaling, the stack shall be updated using a different value passed as a parameter.
+      Otherwise, orchestration steps necessary to properly the scale the clusters will not be executed"

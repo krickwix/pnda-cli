@@ -34,6 +34,7 @@ class SshClient(object):
         self._cluster = cluster
         self._bastion_used = False
         self._public_ip_map = {}
+        self._private_ip_map = {}
 
     def write_ssh_config(self, bastion_ip, os_user, keyfile):
         '''
@@ -99,7 +100,8 @@ fi\n''')
         host = self._subsitute_host_if_bastion(host)
         cmd = "scp -F cli/ssh_config-%s %s %s:%s" % (self._cluster, ' '.join(files), host, '/tmp')
         CONSOLE.debug(cmd)
-        ret_val = subprocess_to_log.call(cmd.split(' '), LOG, host)
+        ret_val = subprocess_to_log.call(cmd.split(' '), LOG, log_id=host)
+        CONSOLE.debug("scp result: %s", ret_val)
         if ret_val != 0:
             raise Exception("Error transferring files to new host %s via SCP. See debug log (%s) for details." % (host, LOG_FILE_NAME))
 
@@ -109,19 +111,27 @@ fi\n''')
         parts = cmd.split(' ')
         parts.append(' && '.join(cmds))
         CONSOLE.debug(json.dumps(parts))
-        ret_val = subprocess_to_log.call(parts, LOG, host, output=output, scan_for_errors=[r'lost connection', r'\s*Failed:\s*[1-9].*'])
+        ret_val = subprocess_to_log.call(parts, LOG, log_id=host, output=output, scan_for_errors=[r'lost connection',
+                                                                                                  r'\s*Failed:\s*[1-9].*',
+                                                                                                  r'\s*Failures:'])
+        CONSOLE.debug("ssh result: %s", ret_val)
         if ret_val != 0:
             raise Exception("Error running ssh commands on host %s. See debug log (%s) for details." % (host, LOG_FILE_NAME))
 
     def set_ip_mappings(self, instance_map):
         self._public_ip_map = {}
+        self._private_ip_map = {}
         for _, instance_properties in instance_map.iteritems():
-            if 'ip_address' in instance_properties and 'private_ip_address' in instance_properties:
+            if instance_properties['ip_address'] and instance_properties['private_ip_address']:
                 self._public_ip_map[instance_properties['ip_address']] = instance_properties['private_ip_address']
+                self._private_ip_map[instance_properties['private_ip_address']] = instance_properties['ip_address']
 
     def _subsitute_host_if_bastion(self, host):
         subs_host = host
         if self._bastion_used and host in self._public_ip_map:
             subs_host = self._public_ip_map[host]
             CONSOLE.debug('Switching public IP %s for private IP %s', host, subs_host)
+        elif not self._bastion_used and host in self._private_ip_map:
+            subs_host = self._private_ip_map[host]
+            CONSOLE.debug('Switching private IP %s for public IP %s', host, subs_host)
         return subs_host

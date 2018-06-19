@@ -60,19 +60,22 @@ openstack_parameters:
   # under the Access & Security section.
   KEYSTONE_REGION_NAME: RegionOne
 
-  # IMAGE_ID: Base image to use for the created instances. It should be created by
+  # imageId: Base image to use for the created instances. It should be created by
   # following the guide in https://github.com/pndaproject/pnda-dib-elements
   #
-  IMAGE_ID: 858abfc7-799e-44fe-8681-1cc38d36fde9
+  imageId: 858abfc7-799e-44fe-8681-1cc38d36fde9
 
   # CIDR specifying the address range that may access the created PNDA instances
   whitelistSshAccess: 0.0.0.0/0
 
   # UUID of the public network in openstack to use
-  PUBLIC_NETWORK_ID: 5982b761-802a-4af3-9c0b-c3b457559179
+  externalPublicNetworkId: 5982b761-802a-4af3-9c0b-c3b457559179
 
-  #name_servers: DNS server(s) to use, this should be provided in the environment
-  dns_nameservers: '8.8.8.8'
+  #nameServers: DNS server(s) to use, this should be provided in the environment
+  nameServers: '8.8.8.8'
+
+  # CIDR specifying the address range for the public subnet (bastion access)
+  publicSubnetCidr: 10.0.0.0/24
 
 platform_salt:
   # Use either PLATFORM_GIT_REPO_URI + PLATFORM_GIT_BRANCH or PLATFORM_SALT_LOCAL
@@ -95,6 +98,7 @@ pnda_application_repo:
   #   s3     - AWS S3. Also set PNDA_APPS_CONTAINER, PNDA_APPS_FOLDER, PNDA_APPS_REGION, PNDA_APPS_ACCESS_KEY_ID, PNDA_APPS_SECRET_ACCESS_KEY
   #   sshfs  - standard file system. Also set PR_FS_LOCATION_PATH, PR_SSHFS_USER, PR_SSHFS_HOST, PR_SSHFS_PATH and PR_SSHFS_KEY
   #   local  - local filesystem on the package repository service server. Also set PR_FS_LOCATION_PATH.
+  #   swift  - Openstack swift. Also set PNDA_APPS_CONTAINER and PNDA_APPS_FOLDER
   PR_FS_TYPE: s3
 
   # S3 container to use for PNDA application packages
@@ -184,7 +188,7 @@ security:
   # - 'disabled': The security material will be ignored.  
   # - 'permissive': The security material will be used if present.
   # - 'enforced': The security material will be required to be present and conforment to the associated requirements.
-  SECURITY_MODE: 'permissive'
+  SECURITY_MODE: 'enforced'
 
   # The path were to find the security material (certificate/key).
   # The directory should be structured as defined in this' repo's directory structure with the same name.
@@ -197,6 +201,13 @@ features:
   # Set to "NO", omit setting or omit features section entirely to turn off experimental features
   EXPERIMENTAL_FEATURES: "NO"
 
+domain:
+  # Top-level domain
+  TOP_LEVEL_DOMAIN: pnda.local
+
+  # Second-level domain
+  SECOND_LEVEL_DOMAIN: dc1
+
 dataset_compaction:
   # Enable/Disable compaction on datasets.
   # "YES" to enable.
@@ -208,3 +219,9 @@ dataset_compaction:
   # M - monthly compaction.
   # Y - yearly compaction.
   PATTERN: d
+
+datanode:
+  # DATANODE_VOLUME_COUNT sets the number of data volumes on each hadoop datanode
+  DATA_VOLUME_COUNT: 1
+  # DEVICE_ROOT sets the disk device root name
+  DEVICE_ROOT: xvdb

@@ -35,16 +35,12 @@ pillar_roots:
 top_file_merging_strategy: same
 
 # To autoload new created modules, states add and remove salt keys,
-# update bastion /etc/hosts file automatically ... add the following reactor configuration
+# add the following reactor configuration
 reactor:
   - 'minion_start':
     - salt://reactor/sync_all.sls
-  - 'salt/cloud/*/created':
-    - salt://reactor/create_bastion_host_entry.sls
-  - 'salt/cloud/*/destroying':
-    - salt://reactor/delete_bastion_host_entry.sls
-  - 'fqdn/updated/jupyter':
-    - salt://reactor/fqdn_update.sls
+  - 'user/login':
+    - salt://reactor/user_login.sls
 ## end of specific PNDA saltmaster config
 file_recv: True
 
@@ -88,8 +84,13 @@ if [ "x$SECURITY_CERTS_TARBALL" != "x" ]; then
     cert_file="/srv/salt/platform-salt/pillar/certs.sls"
     if [ -e cert_file ]; then rm cert_file; fi
     for i in `find /srv/security-certs/ -maxdepth 1 -mindepth 1 -type d -exec basename {} \;`; do
-      for j in `find /srv/security-certs/$i -maxdepth 1 -mindepth 1 -type f -name '*.pem'`; do
-        echo -e "$i:\n  cert: |" >> $cert_file
+      for j in `find /srv/security-certs/$i -maxdepth 1 -mindepth 1 -type f -name '*.yaml'`; do
+        echo -e "$i:" >> $cert_file
+        sed  's/^/  /' $j >> $cert_file
+        break
+      done;
+      for j in `find /srv/security-certs/$i -maxdepth 1 -mindepth 1 -type f -name '*.crt'`; do
+        echo -e "  cert: |" >> $cert_file
         sed  's/^/    /' $j >> $cert_file
         break
       done;
@@ -103,18 +104,22 @@ if [ "x$SECURITY_CERTS_TARBALL" != "x" ]; then
         break;
       done;
     done;
-    #salt '*' saltutil.refresh_pillar
+    for i in `find /srv/security-certs/ -maxdepth 1 -mindepth 1 -type f -name '*.crt'`; do
+        echo -e "CA:\n  cert: |" >> $cert_file
+        sed  's/^/    /' $i >> $cert_file
+        break
+    done;
   fi
 fi
 
 # Push pillar config into platform-salt for environment specific config
 cat << EOF >> /srv/salt/platform-salt/pillar/env_parameters.sls
 os_user: $OS_USER
-keystone.user: ''
-keystone.password: ''
-keystone.tenant: ''
-keystone.auth_url: ''
-keystone.region_name: ''
+keystone.user: '$KEYSTONE_USER'
+keystone.password: '$KEYSTONE_PASSWORD'
+keystone.tenant: '$KEYSTONE_TENANT'
+keystone.auth_url: '$KEYSTONE_AUTH_URL'
+keystone.region_name: '$KEYSTONE_REGION_NAME'
 aws.apps_region: '$PNDA_APPS_REGION'
 aws.apps_key: '$PNDA_APPS_ACCESS_KEY_ID'
 aws.apps_secret: '$PNDA_APPS_SECRET_ACCESS_KEY'
@@ -154,6 +159,11 @@ mine_functions:
 
 security:
   security: $SECURITY_MODE
+
+consul:
+  domain: $TOP_LEVEL_DOMAIN
+  data_center: $SECOND_LEVEL_DOMAIN
+
 EOF
 
 if [ "x$NTP_SERVERS" != "x" ] ; then
@@ -210,6 +220,13 @@ cat << EOF >> /srv/salt/platform-salt/pillar/env_parameters.sls
 dataset_compaction:
   compaction: NO
   pattern: '$PATTERN'
+EOF
+fi
+
+if [ "x$DATA_VOLUME_COUNT" != "x" ] ; then
+cat << EOF >> /srv/salt/platform-salt/pillar/env_parameters.sls
+datanode:
+  data_volume_count: $DATA_VOLUME_COUNT
 EOF
 fi
 

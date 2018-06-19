@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
 - PNDA-4450: Set name tags for CFN resources
 - PNDA-4398: Support Spark 2 for Oozie jobs
 - PNDA-4131: Heat backend to provision PNDA on OpenStack via pnda-cli
+- PNDA-4588: Enable TLS on Knox if certificate is supplied
+- PNDA-4075: Add settings in pnda-env.yaml to control the number and names of disks used for hadoop datanodes
 
 ### Changed
 - PNDA-4394: Remove Anaconda CDH parcel mirror as this is now installed from a bundle
@@ -20,6 +22,12 @@ All notable changes to this project will be documented in this file.
 - PNDA-4525: Deprecate Ubuntu 14.04
 - PNDA-4530: Refactor pnda_env.yaml to reflect that pnda-cli is no longer AWS specific
 - PNDA-4523: Write ssh config when starting CLI
+- PNDA-4558: Modify topology to use gateway instead of bastion
+- PNDA-4603: Don't indiscriminately assign every node in the cluster a public address
+- PNDA-4559: Services ending in -internal will use internal IP addresses
+- PNDA-4588: Add pnda-env.yaml settings for consul domains so they can be used to build the TLS certificates
+- PNDA-4588: Default SECURITY_MODE to enforced to generate TLS certificates if not supplied by the user
+- PNDA-4386: Remove internal services from pnda-cli
 
 ### Fixed
 - PNDA-4415: Update PyYAML and requests
@@ -27,6 +35,10 @@ All notable changes to this project will be documented in this file.
 - PNDA-4453: Apply timeouts in thread.join
 - PNDA-4448: Fixes to ADD_ONLINE_REPOS for redhat/centos
 - PNDA-4498: Use wget instead of curl with apt-key
+- PNDA-4441: Removed "extra-index-url" and "find_links" directives from pip and easy_install configurations
+- PNDA-4624: Fix expand operation
+- PNDA-4658: Fix cmd2 at version compatible with python2
+- PNDA-4444: Detect "Failures:" in salt output to fail fast on error
 
 ## [1.1.0] 2018-02-10
 ### Added
