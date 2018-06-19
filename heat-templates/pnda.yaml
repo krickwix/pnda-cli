@@ -4,25 +4,13 @@
 heat_template_version: 2015-04-30
 
 parameters:
+  pndaRouter:
     type: string
-    default: 'e8343b43-edd0-425d-a435-ea7ff789125d'
-  privateSubnetCidr:
-    type: string
-    description: Private network address (CIDR notation)
-  privateSubnetGateway:
-    type: string
-    description: Private network gateway address
-  publicProducerSubnetCidr:
-    type: string
-    description: Ingest network address (CIDR notation)
-  publicProducerSubnetGateway:
-    type: string
-    description: Ingest network gateway address
   externalPublicNetworkId:
     type: string
     description: >
       ID or name of public network for which floating IP addresses will be allocated
-  publicSubnetCidr: 
+  publicSubnetCidr:
     type: string
     default: "10.0.0.0/24"
     description: "CIDR specifying the address range for the public subnet"
@@ -51,17 +39,6 @@ parameters:
     type: comma_delimited_list
 
 resources:
-  pndaRouter:
-    type: OS::Neutron::Router
-    properties:
-      name:
-        str_replace:
-          template: '%stackname%_pndaRouter'
-          params:
-            '%stackname%': { get_param: 'OS::stack_name' }
-      external_gateway_info:
-        network: { get_param: externalPublicNetworkId }
-
   publicNetwork:
     type: OS::Neutron::Net
     properties:
@@ -75,42 +52,17 @@ resources:
     type: OS::Neutron::Subnet
     depends_on: publicNetwork
     properties:
-      network_id: { get_resource: pnda_ingest_network }
-      cidr: { get_param: publicProducerSubnetCidr }
-      gateway_ip: { get_param: publicProducerSubnetGateway }
-
-  # create a software router
-  #pnda_router:
-  #  type: OS::Neutron::Router
-  #  properties:
-  #    name:
-  #      str_replace:
-  #        template: '%stackname%_pnda_router'
-  #        params:
-  #          '%stackname%': { get_param: 'OS::stack_name' }
-  #    external_gateway_info:
-  #      network: { get_param: PUBLIC_NETWORK_ID }
-
-  # Attach pnda_private_subnet as an interface to the pnda_router
-  private_network_router_interface:
-    type: OS::Neutron::RouterInterface
-    depends_on: [ pnda_private_subnet ]
-    properties:
-      router_id: { get_param: pnda_router }
-      subnet_id: { get_resource: pnda_private_subnet }
       network_id: { get_resource: publicNetwork }
       cidr: { get_param: publicSubnetCidr }
       dns_nameservers: { get_param: nameServers }
 
-
   # Attach publicSubnet as an interface to the pnda_router
   publicNetworkRouterInterface:
     type: OS::Neutron::RouterInterface
-    depends_on: [ pnda_ingest_subnet ]
+    depends_on: [ publicSubnet ]
     properties:
-      #router_id: { get_resource: pnda_router }
-      router_id: { get_param: pnda_router }
-      subnet_id: { get_resource: pnda_ingest_subnet }
+      router_id: { get_param: pndaRouter }
+      subnet_id: { get_resource: publicSubnet }
 
   # Create security group for pnda
   pndaSecurityGroupPnda:
