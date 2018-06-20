@@ -143,7 +143,10 @@ ntp:
   #For REJECT_OUTBOUND="YES" then NTP server/s must.
   NTP_SERVERS:
     - ntp.ubuntu.com
+  # - 91.189.89.198
   # - 91.189.89.199
+  # - 91.189.89.200
+  # - 91.189.89.201
 
 mirrors:
   # Mirror of resources required for provisioning PNDA, see PNDA guide for instructions on how to set this up
@@ -195,6 +198,14 @@ security:
   # If present, the security material should conform to the guidelines defined in the README.md file in
   # the containing sub dorectory.
   SECURITY_MATERIAL_PATH: ./platform-certificates/
+
+  # Address of LDAP server
+  # All instances will have PAM configured to authenticate with this LDAP server if set
+  # Leave blank to disable LDAP-PAM integration
+  LDAP_SERVER: ''
+  
+  # Base DN for LDAP server to use when enabling client PAM integration with LDAP
+  LDAP_BASE_DN: nodomain
 
 features:
   # Include experimental features. 
